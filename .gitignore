@@ -1,0 +1,13 @@
+node_modules/
+dist/
+build/
+.next/
+.turbo/
+*.env
+*.env.local
+.gradle/
+*.keystore
+*.jks
+__pycache__/
+.DS_Store
+apps/backend/safekids-1403-firebase-adminsdk-fbsvc-59f3d92c2c.json
