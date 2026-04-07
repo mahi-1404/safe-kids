@@ -1,9 +1,13 @@
 import { Outlet, NavLink } from 'react-router-dom'
+import { useEffect, useState } from 'react'
 import {
   LayoutDashboard, MapPin, Bell, Clock, Radio,
   BarChart2, Settings, Shield, LogOut, Camera,
   AppWindow, Globe, Hexagon
 } from 'lucide-react'
+import { useAuth } from '../contexts/AuthContext'
+import { alertApi } from '../services/api'
+import socketService from '../services/socket'
 
 const nav = [
   { to: '/dashboard',      icon: LayoutDashboard, label: 'Dashboard' },
@@ -20,6 +24,25 @@ const nav = [
 ]
 
 export default function DashboardLayout() {
+  const { parent, activeChild, logout } = useAuth()
+  const [unreadCount, setUnreadCount] = useState(0)
+
+  useEffect(() => {
+    alertApi.getAll().then(res => {
+      setUnreadCount(res.data.filter((a: any) => !a.isRead).length)
+    }).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    socketService.on('alert:new', () => {
+      setUnreadCount(n => n + 1)
+    })
+    return () => { socketService.off('alert:new') }
+  }, [])
+
+  const childInitial = activeChild?.name?.[0]?.toUpperCase() ?? '?'
+  const parentInitial = parent?.name?.[0]?.toUpperCase() ?? 'P'
+
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
       {/* Sidebar */}
@@ -47,17 +70,19 @@ export default function DashboardLayout() {
         <div style={{ padding: '0 16px 24px' }}>
           <div style={{
             background: '#0f172a', borderRadius: 10, padding: '10px 14px',
-            display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer'
+            display: 'flex', alignItems: 'center', gap: 10
           }}>
             <div style={{
               width: 32, height: 32, borderRadius: '50%',
               background: 'linear-gradient(135deg, #f59e0b, #ef4444)',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               fontSize: 14, fontWeight: 700
-            }}>A</div>
+            }}>{childInitial}</div>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 600 }}>Aryan</div>
-              <div style={{ fontSize: 11, color: '#22c55e' }}>● Online</div>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>{activeChild?.name ?? 'No child'}</div>
+              <div style={{ fontSize: 11, color: activeChild?.isOnline ? '#22c55e' : '#64748b' }}>
+                {activeChild?.isOnline ? '● Online' : '○ Offline'}
+              </div>
             </div>
           </div>
         </div>
@@ -81,7 +106,7 @@ export default function DashboardLayout() {
 
         {/* Logout */}
         <div style={{ padding: '16px 8px 0' }}>
-          <button style={{
+          <button onClick={logout} style={{
             display: 'flex', alignItems: 'center', gap: 10,
             padding: '10px 16px', borderRadius: 8, width: '100%',
             background: 'transparent', border: 'none', cursor: 'pointer',
@@ -102,25 +127,27 @@ export default function DashboardLayout() {
           background: '#0f172a', position: 'sticky', top: 0, zIndex: 10
         }}>
           <div style={{ color: '#94a3b8', fontSize: 14 }}>
-            Last updated: just now
+            {activeChild ? `Monitoring: ${activeChild.name}` : 'SafeKids Dashboard'}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             <div style={{ position: 'relative', cursor: 'pointer' }}>
               <Bell size={20} color="#94a3b8" />
-              <div style={{
-                position: 'absolute', top: -4, right: -4,
-                background: '#ef4444', borderRadius: '50%',
-                width: 16, height: 16, fontSize: 10,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontWeight: 700
-              }}>3</div>
+              {unreadCount > 0 && (
+                <div style={{
+                  position: 'absolute', top: -4, right: -4,
+                  background: '#ef4444', borderRadius: '50%',
+                  width: 16, height: 16, fontSize: 10,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontWeight: 700
+                }}>{unreadCount > 9 ? '9+' : unreadCount}</div>
+              )}
             </div>
             <div style={{
               width: 32, height: 32, borderRadius: '50%',
               background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               fontSize: 13, fontWeight: 700, cursor: 'pointer'
-            }}>M</div>
+            }}>{parentInitial}</div>
           </div>
         </div>
 

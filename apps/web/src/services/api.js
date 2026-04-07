@@ -24,6 +24,7 @@ api.interceptors.response.use(res => res, err => {
 export const authApi = {
     login: (email, password) => api.post('/api/auth/login', { email, password }),
     register: (name, email, phone, password) => api.post('/api/auth/register', { name, email, phone, password }),
+    resendVerification: (email) => api.post('/api/auth/resend-verification', { email }),
 };
 // ─── Child ────────────────────────────────────────────────────────────────────
 export const childApi = {
