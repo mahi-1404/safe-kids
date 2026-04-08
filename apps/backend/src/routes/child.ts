@@ -85,4 +85,53 @@ router.patch('/:id/offline', async (req: AuthRequest, res: Response): Promise<vo
   }
 });
 
+// PATCH /api/child/:id — parent updates child settings/profile
+router.patch('/:id', protect, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const allowed = ['name', 'age', 'agePreset', 'screenTimeLimit', 'bedtimeStart', 'bedtimeEnd'];
+    const updates: Record<string, unknown> = {};
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+
+    const child = await Child.findOneAndUpdate(
+      { _id: req.params.id, parent: req.parentId },
+      { $set: updates },
+      { new: true }
+    );
+
+    if (!child) {
+      res.status(404).json({ message: 'Child not found' });
+      return;
+    }
+
+    // Push updated policy to child device in real time
+    const { getIO } = await import('../config/socket');
+    getIO().to(`child:${child._id}`).emit('policy:settings', {
+      screenTimeLimit: child.screenTimeLimit,
+      bedtimeStart: child.bedtimeStart,
+      bedtimeEnd: child.bedtimeEnd,
+    });
+
+    res.json(child);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error });
+  }
+});
+
+// DELETE /api/child/:id — parent removes a child profile
+router.delete('/:id', protect, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const child = await Child.findOneAndDelete({ _id: req.params.id, parent: req.parentId });
+    if (!child) {
+      res.status(404).json({ message: 'Child not found' });
+      return;
+    }
+    await Parent.findByIdAndUpdate(req.parentId, { $pull: { children: child._id } });
+    res.json({ message: 'Child profile deleted' });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error });
+  }
+});
+
 export default router;

@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 import Parent from '../models/Parent';
 import Child from '../models/Child';
+import { protect, AuthRequest } from '../middleware/auth';
 import { sendVerificationEmail, sendPasswordResetAlert } from '../config/email';
 
 const router = Router();
@@ -295,6 +296,108 @@ router.post('/consent', async (req: Request, res: Response): Promise<void> => {
     const { parentId } = req.body;
     await Parent.findByIdAndUpdate(parentId, { consentSigned: true, consentSignedAt: new Date() });
     res.json({ message: 'Consent recorded' });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error });
+  }
+});
+
+// ─── GET /api/auth/profile ───────────────────────────────────────────────────
+router.get('/profile', protect, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const parent = await Parent.findById(req.parentId).select('-password -verificationToken -verificationTokenExpiry');
+    if (!parent) { res.status(404).json({ message: 'Not found' }); return; }
+    res.json(parent);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error });
+  }
+});
+
+// ─── PATCH /api/auth/profile ─────────────────────────────────────────────────
+router.patch('/profile', protect, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { name, phone, fcmToken } = req.body;
+    const updates: Record<string, unknown> = {};
+    if (name) updates.name = name;
+    if (phone) updates.phone = phone;
+    if (fcmToken) updates.fcmToken = fcmToken;
+
+    const parent = await Parent.findByIdAndUpdate(req.parentId, { $set: updates }, { new: true })
+      .select('-password -verificationToken -verificationTokenExpiry');
+
+    res.json(parent);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error });
+  }
+});
+
+// ─── POST /api/auth/change-password ─────────────────────────────────────────
+router.post('/change-password', protect, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) {
+      res.status(400).json({ message: 'currentPassword and newPassword required' });
+      return;
+    }
+    if (newPassword.length < 8) {
+      res.status(400).json({ message: 'New password must be at least 8 characters' });
+      return;
+    }
+
+    const parent = await Parent.findById(req.parentId);
+    if (!parent) { res.status(404).json({ message: 'Not found' }); return; }
+
+    const valid = await parent.comparePassword(currentPassword);
+    if (!valid) { res.status(401).json({ message: 'Current password is incorrect' }); return; }
+
+    parent.password = newPassword;
+    await parent.save(); // pre-save hook hashes it
+    res.json({ message: 'Password changed' });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error });
+  }
+});
+
+// ─── POST /api/auth/forgot-password ─────────────────────────────────────────
+router.post('/forgot-password', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { email } = req.body;
+    const parent = await Parent.findOne({ email });
+    // Always return success to prevent email enumeration
+    if (!parent) { res.json({ message: 'If that email exists, a reset link has been sent.' }); return; }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    parent.verificationToken = token;
+    parent.verificationTokenExpiry = new Date(Date.now() + 60 * 60 * 1000); // 1h
+    await parent.save();
+
+    try { await sendVerificationEmail(email, parent.name, token); } catch {}
+    res.json({ message: 'If that email exists, a reset link has been sent.' });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error });
+  }
+});
+
+// ─── POST /api/auth/reset-password ──────────────────────────────────────────
+router.post('/reset-password', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { token, newPassword } = req.body;
+    if (!token || !newPassword) {
+      res.status(400).json({ message: 'token and newPassword required' });
+      return;
+    }
+
+    const parent = await Parent.findOne({
+      verificationToken: token,
+      verificationTokenExpiry: { $gt: new Date() },
+    });
+
+    if (!parent) { res.status(400).json({ message: 'Invalid or expired reset token' }); return; }
+
+    parent.password = newPassword;
+    parent.verificationToken = undefined;
+    parent.verificationTokenExpiry = undefined;
+    await parent.save();
+    res.json({ message: 'Password reset successfully' });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error });
   }
