@@ -6,39 +6,160 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const uuid_1 = require("uuid");
+const crypto_1 = __importDefault(require("crypto"));
 const Parent_1 = __importDefault(require("../models/Parent"));
 const Child_1 = __importDefault(require("../models/Child"));
+const auth_1 = require("../middleware/auth");
+const email_1 = require("../config/email");
 const router = (0, express_1.Router)();
-// POST /api/auth/register
+// ─── POST /api/auth/register ────────────────────────────────────────────────
 router.post('/register', async (req, res) => {
     try {
         const { name, email, phone, password } = req.body;
+        if (!name || !email || !phone || !password) {
+            res.status(400).json({ message: 'All fields are required' });
+            return;
+        }
         const exists = await Parent_1.default.findOne({ email });
         if (exists) {
             res.status(400).json({ message: 'Email already registered' });
             return;
         }
-        const parent = await Parent_1.default.create({ name, email, phone, password });
-        const token = jsonwebtoken_1.default.sign({ id: parent._id }, process.env.JWT_SECRET, {
-            expiresIn: 86400, // 24 hours in seconds
+        // Generate verification token (expires in 24h)
+        const verificationToken = crypto_1.default.randomBytes(32).toString('hex');
+        const verificationTokenExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        const parent = await Parent_1.default.create({
+            name,
+            email,
+            phone,
+            password,
+            verificationToken,
+            verificationTokenExpiry,
+            emailVerified: false,
         });
-        res.status(201).json({ token, parent: { id: parent._id, name: parent.name, email: parent.email } });
+        // Send verification email
+        try {
+            await (0, email_1.sendVerificationEmail)(email, name, verificationToken);
+        }
+        catch (emailErr) {
+            console.warn('[Auth] Failed to send verification email:', emailErr);
+        }
+        res.status(201).json({
+            message: 'Account created. Please check your email to verify your account.',
+            parentId: parent._id,
+        });
     }
     catch (error) {
         res.status(500).json({ message: 'Server error', error });
     }
 });
-// POST /api/auth/login
+// ─── GET /api/auth/verify-email ─────────────────────────────────────────────
+router.get('/verify-email', async (req, res) => {
+    try {
+        const { token } = req.query;
+        if (!token || typeof token !== 'string') {
+            res.status(400).send('<h2>Invalid verification link.</h2>');
+            return;
+        }
+        const parent = await Parent_1.default.findOne({
+            verificationToken: token,
+            verificationTokenExpiry: { $gt: new Date() },
+        });
+        if (!parent) {
+            res.status(400).send('<h2>Verification link is invalid or has expired. Please register again.</h2>');
+            return;
+        }
+        parent.emailVerified = true;
+        parent.verificationToken = undefined;
+        parent.verificationTokenExpiry = undefined;
+        await parent.save();
+        res.send(`
+      <html>
+        <body style="font-family:Arial;text-align:center;padding:60px;background:#1a1a2e;color:#fff;">
+          <h2 style="color:#4ecca3;">✓ Email Verified!</h2>
+          <p>Your SafeKids account is now active.</p>
+          <p>You can now log in to the parent dashboard.</p>
+        </body>
+      </html>
+    `);
+    }
+    catch (error) {
+        res.status(500).send('<h2>Server error. Please try again.</h2>');
+    }
+});
+// ─── POST /api/auth/resend-verification ─────────────────────────────────────
+router.post('/resend-verification', async (req, res) => {
+    try {
+        const { email } = req.body;
+        const parent = await Parent_1.default.findOne({ email });
+        if (!parent) {
+            res.status(404).json({ message: 'Email not found' });
+            return;
+        }
+        if (parent.emailVerified) {
+            res.status(400).json({ message: 'Email already verified' });
+            return;
+        }
+        const verificationToken = crypto_1.default.randomBytes(32).toString('hex');
+        parent.verificationToken = verificationToken;
+        parent.verificationTokenExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        await parent.save();
+        await (0, email_1.sendVerificationEmail)(email, parent.name, verificationToken);
+        res.json({ message: 'Verification email resent' });
+    }
+    catch (error) {
+        res.status(500).json({ message: 'Server error', error });
+    }
+});
+// ─── POST /api/auth/login ────────────────────────────────────────────────────
 router.post('/login', async (req, res) => {
     try {
         const { email, password } = req.body;
         const parent = await Parent_1.default.findOne({ email });
-        if (!parent || !(await parent.comparePassword(password))) {
+        if (!parent) {
             res.status(401).json({ message: 'Invalid email or password' });
             return;
         }
+        // Check if account is locked
+        if (parent.isLocked()) {
+            const minutesLeft = Math.ceil((parent.lockUntil.getTime() - Date.now()) / 60000);
+            res.status(429).json({
+                message: `Account locked due to too many failed attempts. Try again in ${minutesLeft} minute(s).`,
+                locked: true,
+                lockUntil: parent.lockUntil,
+            });
+            return;
+        }
+        const valid = await parent.comparePassword(password);
+        if (!valid) {
+            await parent.incrementLoginAttempts();
+            // Alert parent by email when account gets locked
+            if (parent.loginAttempts >= 4) {
+                try {
+                    await (0, email_1.sendPasswordResetAlert)(email, parent.name);
+                }
+                catch { }
+            }
+            const remaining = Math.max(0, 5 - parent.loginAttempts);
+            res.status(401).json({
+                message: remaining > 0
+                    ? `Invalid email or password. ${remaining} attempt(s) remaining.`
+                    : 'Account locked for 15 minutes due to too many failed attempts.',
+            });
+            return;
+        }
+        // Check email verification
+        if (!parent.emailVerified) {
+            res.status(403).json({
+                message: 'Please verify your email before logging in. Check your inbox.',
+                emailNotVerified: true,
+            });
+            return;
+        }
+        // Successful login — reset attempts
+        await parent.resetLoginAttempts();
         const token = jsonwebtoken_1.default.sign({ id: parent._id }, process.env.JWT_SECRET, {
-            expiresIn: 86400, // 24 hours in seconds
+            expiresIn: 86400,
         });
         res.json({ token, parent: { id: parent._id, name: parent.name, email: parent.email } });
     }
@@ -46,27 +167,44 @@ router.post('/login', async (req, res) => {
         res.status(500).json({ message: 'Server error', error });
     }
 });
-// POST /api/auth/child-login
-// Called by child app during installation using parent credentials
+// ─── POST /api/auth/child-login ──────────────────────────────────────────────
 router.post('/child-login', async (req, res) => {
     try {
-        const { email, password, childName, childAge, fcmToken, deviceModel, androidVersion } = req.body;
-        // Verify parent credentials
+        const { email, password, childName, childAge, fcmToken, deviceModel, androidVersion, deviceId: providedDeviceId } = req.body;
         const parent = await Parent_1.default.findOne({ email });
-        if (!parent || !(await parent.comparePassword(password))) {
+        if (!parent) {
             res.status(401).json({ message: 'Invalid email or password' });
             return;
         }
-        // Check if parent has given consent
-        if (!parent.consentSigned) {
-            res.status(403).json({ message: 'Parental consent not completed. Please finish setup on the web dashboard.' });
+        // Check account lock
+        if (parent.isLocked()) {
+            const minutesLeft = Math.ceil((parent.lockUntil.getTime() - Date.now()) / 60000);
+            res.status(429).json({ message: `Account locked. Try again in ${minutesLeft} minute(s).` });
             return;
         }
-        const deviceId = (0, uuid_1.v4)();
-        // Find existing child profile by name under this parent or create new one
+        const valid = await parent.comparePassword(password);
+        if (!valid) {
+            await parent.incrementLoginAttempts();
+            const remaining = Math.max(0, 5 - parent.loginAttempts);
+            res.status(401).json({
+                message: remaining > 0
+                    ? `Invalid email or password. ${remaining} attempt(s) remaining.`
+                    : 'Account locked for 15 minutes.',
+            });
+            return;
+        }
+        // Email must be verified before child device can be paired
+        if (!parent.emailVerified) {
+            res.status(403).json({
+                message: 'Parent email not verified. Please verify your email first.',
+                emailNotVerified: true,
+            });
+            return;
+        }
+        await parent.resetLoginAttempts();
+        const deviceId = providedDeviceId || (0, uuid_1.v4)();
         let child = await Child_1.default.findOne({ parent: parent._id, name: childName });
         if (child) {
-            // Update device info on existing child profile
             child.fcmToken = fcmToken;
             child.deviceId = deviceId;
             child.deviceModel = deviceModel;
@@ -77,7 +215,6 @@ router.post('/child-login', async (req, res) => {
             await child.save();
         }
         else {
-            // Create new child profile and link to parent
             child = await Child_1.default.create({
                 name: childName,
                 age: childAge || 10,
@@ -91,9 +228,7 @@ router.post('/child-login', async (req, res) => {
             });
             await Parent_1.default.findByIdAndUpdate(parent._id, { $push: { children: child._id } });
         }
-        // Issue a long-lived token for the child app
-        const token = jsonwebtoken_1.default.sign({ childId: child._id, parentId: parent._id, deviceId }, process.env.JWT_SECRET, { expiresIn: 31536000 } // 365 days in seconds
-        );
+        const token = jsonwebtoken_1.default.sign({ childId: child._id, parentId: parent._id, deviceId }, process.env.JWT_SECRET, { expiresIn: 31536000 });
         res.json({
             token,
             childId: child._id,
@@ -108,12 +243,142 @@ router.post('/child-login', async (req, res) => {
         res.status(500).json({ message: 'Server error', error });
     }
 });
-// POST /api/auth/consent
+// ─── POST /api/auth/verify-parent-password ───────────────────────────────────
+// Called by child app when uninstall is attempted — verifies parent password
+router.post('/verify-parent-password', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        const parent = await Parent_1.default.findOne({ email });
+        if (!parent) {
+            res.status(401).json({ valid: false });
+            return;
+        }
+        const valid = await parent.comparePassword(password);
+        res.json({ valid });
+    }
+    catch (error) {
+        res.status(500).json({ message: 'Server error', error });
+    }
+});
+// ─── POST /api/auth/consent ──────────────────────────────────────────────────
 router.post('/consent', async (req, res) => {
     try {
         const { parentId } = req.body;
         await Parent_1.default.findByIdAndUpdate(parentId, { consentSigned: true, consentSignedAt: new Date() });
         res.json({ message: 'Consent recorded' });
+    }
+    catch (error) {
+        res.status(500).json({ message: 'Server error', error });
+    }
+});
+// ─── GET /api/auth/profile ───────────────────────────────────────────────────
+router.get('/profile', auth_1.protect, async (req, res) => {
+    try {
+        const parent = await Parent_1.default.findById(req.parentId).select('-password -verificationToken -verificationTokenExpiry');
+        if (!parent) {
+            res.status(404).json({ message: 'Not found' });
+            return;
+        }
+        res.json(parent);
+    }
+    catch (error) {
+        res.status(500).json({ message: 'Server error', error });
+    }
+});
+// ─── PATCH /api/auth/profile ─────────────────────────────────────────────────
+router.patch('/profile', auth_1.protect, async (req, res) => {
+    try {
+        const { name, phone, fcmToken } = req.body;
+        const updates = {};
+        if (name)
+            updates.name = name;
+        if (phone)
+            updates.phone = phone;
+        if (fcmToken)
+            updates.fcmToken = fcmToken;
+        const parent = await Parent_1.default.findByIdAndUpdate(req.parentId, { $set: updates }, { new: true })
+            .select('-password -verificationToken -verificationTokenExpiry');
+        res.json(parent);
+    }
+    catch (error) {
+        res.status(500).json({ message: 'Server error', error });
+    }
+});
+// ─── POST /api/auth/change-password ─────────────────────────────────────────
+router.post('/change-password', auth_1.protect, async (req, res) => {
+    try {
+        const { currentPassword, newPassword } = req.body;
+        if (!currentPassword || !newPassword) {
+            res.status(400).json({ message: 'currentPassword and newPassword required' });
+            return;
+        }
+        if (newPassword.length < 8) {
+            res.status(400).json({ message: 'New password must be at least 8 characters' });
+            return;
+        }
+        const parent = await Parent_1.default.findById(req.parentId);
+        if (!parent) {
+            res.status(404).json({ message: 'Not found' });
+            return;
+        }
+        const valid = await parent.comparePassword(currentPassword);
+        if (!valid) {
+            res.status(401).json({ message: 'Current password is incorrect' });
+            return;
+        }
+        parent.password = newPassword;
+        await parent.save(); // pre-save hook hashes it
+        res.json({ message: 'Password changed' });
+    }
+    catch (error) {
+        res.status(500).json({ message: 'Server error', error });
+    }
+});
+// ─── POST /api/auth/forgot-password ─────────────────────────────────────────
+router.post('/forgot-password', async (req, res) => {
+    try {
+        const { email } = req.body;
+        const parent = await Parent_1.default.findOne({ email });
+        // Always return success to prevent email enumeration
+        if (!parent) {
+            res.json({ message: 'If that email exists, a reset link has been sent.' });
+            return;
+        }
+        const token = crypto_1.default.randomBytes(32).toString('hex');
+        parent.verificationToken = token;
+        parent.verificationTokenExpiry = new Date(Date.now() + 60 * 60 * 1000); // 1h
+        await parent.save();
+        try {
+            await (0, email_1.sendVerificationEmail)(email, parent.name, token);
+        }
+        catch { }
+        res.json({ message: 'If that email exists, a reset link has been sent.' });
+    }
+    catch (error) {
+        res.status(500).json({ message: 'Server error', error });
+    }
+});
+// ─── POST /api/auth/reset-password ──────────────────────────────────────────
+router.post('/reset-password', async (req, res) => {
+    try {
+        const { token, newPassword } = req.body;
+        if (!token || !newPassword) {
+            res.status(400).json({ message: 'token and newPassword required' });
+            return;
+        }
+        const parent = await Parent_1.default.findOne({
+            verificationToken: token,
+            verificationTokenExpiry: { $gt: new Date() },
+        });
+        if (!parent) {
+            res.status(400).json({ message: 'Invalid or expired reset token' });
+            return;
+        }
+        parent.password = newPassword;
+        parent.verificationToken = undefined;
+        parent.verificationTokenExpiry = undefined;
+        await parent.save();
+        res.json({ message: 'Password reset successfully' });
     }
     catch (error) {
         res.status(500).json({ message: 'Server error', error });

@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import {
   LayoutDashboard, MapPin, Bell, Clock, Radio,
   BarChart2, Settings, Shield, LogOut, Camera,
-  AppWindow, Globe, Hexagon
+  AppWindow, Globe, Hexagon, MessageSquare, Phone
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { alertApi } from '../services/api'
@@ -14,6 +14,8 @@ const nav = [
   { to: '/map',            icon: MapPin,           label: 'Live Map' },
   { to: '/geofence',       icon: Hexagon,          label: 'Geofence' },
   { to: '/alerts',         icon: Bell,             label: 'Alerts' },
+  { to: '/sms-logs',       icon: MessageSquare,    label: 'SMS Logs' },
+  { to: '/call-logs',      icon: Phone,            label: 'Call Logs' },
   { to: '/screen-time',    icon: Clock,            label: 'Screen Time' },
   { to: '/app-control',    icon: AppWindow,        label: 'App Control' },
   { to: '/web-filter',     icon: Globe,            label: 'Web Filter' },
@@ -28,8 +30,8 @@ export default function DashboardLayout() {
   const [unreadCount, setUnreadCount] = useState(0)
 
   useEffect(() => {
-    alertApi.getAll().then(res => {
-      setUnreadCount(res.data.filter((a: any) => !a.isRead).length)
+    alertApi.getAll({ unreadOnly: true, limit: 100 }).then(res => {
+      setUnreadCount(res.data.total ?? 0)
     }).catch(() => {})
   }, [])
 

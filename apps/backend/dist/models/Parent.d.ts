@@ -10,7 +10,15 @@ export interface IParent extends Document {
     subscription: 'free' | 'standard' | 'premium' | 'family_plus';
     children: mongoose.Types.ObjectId[];
     createdAt: Date;
+    emailVerified: boolean;
+    verificationToken?: string;
+    verificationTokenExpiry?: Date;
+    loginAttempts: number;
+    lockUntil?: Date;
     comparePassword(password: string): Promise<boolean>;
+    isLocked(): boolean;
+    incrementLoginAttempts(): Promise<void>;
+    resetLoginAttempts(): Promise<void>;
 }
 declare const _default: mongoose.Model<IParent, {}, {}, {}, mongoose.Document<unknown, {}, IParent, {}, mongoose.DefaultSchemaOptions> & IParent & Required<{
     _id: mongoose.Types.ObjectId;

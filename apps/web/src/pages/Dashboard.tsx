@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { MapPin, Clock, Shield, Battery, AlertTriangle, Lock, MessageSquare, Phone, Wifi } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { reportsApi, alertApi, screenTimeApi, commandApi } from '../services/api'
 import socketService from '../services/socket'
@@ -24,6 +25,7 @@ const Card = ({ children, style = {} }: { children: React.ReactNode, style?: Rea
 
 export default function Dashboard() {
   const { parent, activeChild } = useAuth()
+  const navigate = useNavigate()
   const childId = activeChild?._id
 
   const [stats, setStats] = useState<any>(null)
@@ -35,7 +37,7 @@ export default function Dashboard() {
   useEffect(() => {
     if (!childId) return
     reportsApi.getDashboard(childId).then(r => setStats(r.data)).catch(() => {})
-    alertApi.getAll().then(r => setRecentAlerts(r.data.slice(0, 3))).catch(() => {})
+    alertApi.getAll({ childId, limit: 3 }).then(r => setRecentAlerts(r.data.alerts ?? [])).catch(() => {})
     screenTimeApi.getWeek(childId).then(r => {
       setWeekData(r.data.map((d: any) => ({
         day: new Date(d.date).toLocaleDateString('en', { weekday: 'short' }),
@@ -59,10 +61,16 @@ export default function Dashboard() {
     socketService.on('alert:new', (alert: any) => {
       setRecentAlerts(prev => [alert, ...prev].slice(0, 3))
     })
+    socketService.on('child:riskscore', (data: any) => {
+      if (data.childId === childId) {
+        setStats((s: any) => s ? { ...s, riskScore: data.score } : s)
+      }
+    })
     return () => {
       socketService.off('location:update')
       socketService.off('screentime:update')
       socketService.off('alert:new')
+      socketService.off('child:riskscore')
     }
   }, [childId])
 
@@ -150,7 +158,7 @@ export default function Dashboard() {
         <Card>
           <div style={{ fontWeight: 600, marginBottom: 20, fontSize: 15, display: 'flex', justifyContent: 'space-between' }}>
             Recent Alerts
-            <span style={{ fontSize: 12, color: '#3b82f6', cursor: 'pointer' }}>View all</span>
+            <span onClick={() => navigate('/alerts')} style={{ fontSize: 12, color: '#3b82f6', cursor: 'pointer' }}>View all</span>
           </div>
           {recentAlerts.length > 0 ? recentAlerts.map((a: any, i: number) => {
             const color = severityColor[a.severity] ?? '#64748b'

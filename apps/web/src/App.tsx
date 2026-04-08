@@ -13,6 +13,8 @@ import Camera from './pages/Camera'
 import AppControl from './pages/AppControl'
 import WebFilter from './pages/WebFilter'
 import Geofence from './pages/Geofence'
+import SmsLogs from './pages/SmsLogs'
+import CallLogs from './pages/CallLogs'
 import DashboardLayout from './layouts/DashboardLayout'
 
 export default function App() {
@@ -27,6 +29,8 @@ export default function App() {
             <Route path="map" element={<LiveMap />} />
             <Route path="geofence" element={<Geofence />} />
             <Route path="alerts" element={<Alerts />} />
+            <Route path="sms-logs" element={<SmsLogs />} />
+            <Route path="call-logs" element={<CallLogs />} />
             <Route path="screen-time" element={<ScreenTime />} />
             <Route path="app-control" element={<AppControl />} />
             <Route path="web-filter" element={<WebFilter />} />

@@ -48,6 +48,13 @@ const ParentSchema = new mongoose_1.Schema({
     consentSignedAt: { type: Date },
     subscription: { type: String, enum: ['free', 'standard', 'premium', 'family_plus'], default: 'free' },
     children: [{ type: mongoose_1.Schema.Types.ObjectId, ref: 'Child' }],
+    // Email verification
+    emailVerified: { type: Boolean, default: false },
+    verificationToken: { type: String },
+    verificationTokenExpiry: { type: Date },
+    // Login security
+    loginAttempts: { type: Number, default: 0 },
+    lockUntil: { type: Date },
 }, { timestamps: true });
 ParentSchema.pre('save', async function () {
     if (!this.isModified('password'))
@@ -56,6 +63,30 @@ ParentSchema.pre('save', async function () {
 });
 ParentSchema.methods.comparePassword = async function (password) {
     return bcrypt_1.default.compare(password, this.password);
+};
+ParentSchema.methods.isLocked = function () {
+    return !!(this.lockUntil && this.lockUntil > new Date());
+};
+const MAX_ATTEMPTS = 5;
+const LOCK_DURATION_MS = 15 * 60 * 1000; // 15 minutes
+ParentSchema.methods.incrementLoginAttempts = async function () {
+    // If lock has expired, reset
+    if (this.lockUntil && this.lockUntil < new Date()) {
+        this.loginAttempts = 1;
+        this.lockUntil = undefined;
+    }
+    else {
+        this.loginAttempts += 1;
+        if (this.loginAttempts >= MAX_ATTEMPTS) {
+            this.lockUntil = new Date(Date.now() + LOCK_DURATION_MS);
+        }
+    }
+    await this.save();
+};
+ParentSchema.methods.resetLoginAttempts = async function () {
+    this.loginAttempts = 0;
+    this.lockUntil = undefined;
+    await this.save();
 };
 exports.default = mongoose_1.default.model('Parent', ParentSchema);
 //# sourceMappingURL=Parent.js.map
